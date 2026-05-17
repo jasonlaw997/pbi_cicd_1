@@ -112,10 +112,6 @@ jobs:
             }
           }
 
-          if ($env:PBI_XMLA_SERVER -like "*L2_1*") {
-            throw "PBI_XMLA_SERVER still points to L2_1. Update the GitHub variable before deploying."
-          }
-
           if (-not (Test-Path -LiteralPath $env:TE2_PATH -PathType Leaf)) {
             throw "Tabular Editor 2 not found at: $env:TE2_PATH"
           }

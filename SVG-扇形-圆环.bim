@@ -1,0 +1,345 @@
+{
+  "name": "SVG-扇形-圆环 _1_",
+  "compatibilityLevel": 1600,
+  "model": {
+    "culture": "zh-CN",
+    "dataAccessOptions": {
+      "legacyRedirects": true,
+      "returnErrorValuesAsNull": true
+    },
+    "defaultPowerBIDataSourceVersion": "powerBI_V3",
+    "sourceQueryCulture": "zh-CN",
+    "tables": [
+      {
+        "name": "DAX",
+        "lineageTag": "a28e52f4-c5a2-42a8-a62e-215aca41f4ee",
+        "partitions": [
+          {
+            "name": "DAX-3094950f-b73b-45bd-80b2-d4b7398821bf",
+            "mode": "import",
+            "source": {
+              "type": "m",
+              "expression": [
+                "let",
+                "    Source = Table.FromRows(Json.Document(Binary.Decompress(Binary.FromText(\"i45WMlSKjQUA\", BinaryEncoding.Base64), Compression.Deflate)), let _t = ((type nullable text) meta [Serialized.Text = true]) in type table [value = _t]),",
+                "    #\"Changed Type\" = Table.TransformColumnTypes(Source,{{\"value\", Int64.Type}}),",
+                "    #\"Removed Columns\" = Table.RemoveColumns(#\"Changed Type\",{\"value\"})",
+                "in",
+                "    #\"Removed Columns\""
+              ]
+            }
+          }
+        ],
+        "measures": [
+          {
+            "name": "业绩达成",
+            "expression": "0.6",
+            "lineageTag": "20815f7d-1b5d-442f-8ae0-4c48b60d26e4",
+            "annotations": [
+              {
+                "name": "PBI_FormatHint",
+                "value": "{\"isGeneralNumber\":true}"
+              }
+            ]
+          },
+          {
+            "name": "扇形图",
+            "expression": [
+              "",
+              "VAR w=IF([业绩达成]<=0,0,IF([业绩达成]>=1,1,[业绩达成]))",
+              "//如果率值小于1，按实际百分比显示，否则按百分百显示-即一个半圆 ",
+              "VAR x=55-50*COS(PI()*w)",
+              "//半径50的弧线终点x轴位置，π是完整的100%，即180度，乘以比率再经过圆心换算得出x轴值",
+              "VAR y=55-50*SIN(PI()*w)",
+              "//半径50的弧线终点y轴位置",
+              "VAR color=if([业绩达成]<1,\"Tomato\", \"DarkCyan\")",
+              "RETURN",
+              "\"data:image/svg+xml;utf8,\"&",
+              "\"<svg width='110' height='65' xmlns='http://www.w3.org/2000/svg'>",
+              "    <path d='M55 55 L5 55 A50 50 0 0 1 \"& x &\" \"& y& \"Z'  fill='\"&color&\"'/>\" &",
+              "//M是扇形的圆心坐标，L是扇形起始线条，A是圆弧，圆弧的半径是50，圆弧的起点是上一步L的位置终点是计算结果，最后的Z首尾相连。",
+              "    \"<text x='45' y='65' font-size='10' >\" &ROUND([业绩达成]*100,0) &\"% </text>\"",
+              "//扇形下方放一个文本",
+              "&\"</svg>\""
+            ],
+            "lineageTag": "185b6423-bddb-49bf-b389-9777fb632ba8"
+          },
+          {
+            "name": "全环形图",
+            "expression": [
+              "",
+              "VAR w =",
+              "      IF ( [业绩达成] <= 0, 0, IF ( [业绩达成] >= 1, 1, [业绩达成] ) )",
+              "VAR ax =",
+              "    55-50 * COS ( PI () * w * 2 )",
+              "VAR ay =",
+              "    55-50 * SIN ( PI () * w * 2 )",
+              "VAR dx =",
+              "    55-40 * COS ( PI () * w * 2 )",
+              "VAR dy =",
+              "    55-40 * SIN ( PI () * w * 2 )",
+              "VAR large_arc_flag =",
+              "    IF ( [业绩达成] > 0.5, 1, 0 )",
+              "VAR color =",
+              "    IF ( [业绩达成] < 1, \"Tomato\", \"DarkCyan\" )",
+              "RETURN",
+              "    \"data:image/svg+xml;utf8,\" & \"<svg width='110' height='110' xmlns='http://www.w3.org/2000/svg'>\"",
+              "        & IF (",
+              "            [业绩达成] < 1,",
+              "            \"<path d='M55 55 L5 55 A50 50 0 \" & large_arc_flag & \" 1 \" & ax & \" \" & ay & \"L\" & dx & \" \" & dy & \"A40 40 0 \" & large_arc_flag & \" 0 15 55Z'  fill='\" & color & \"'/>\",",
+              "            \"<path d='M55 55 L5 55 A50 50 0 0 1 105 55 L95 55 A40 40 0 0 0 15,55Z'  fill='\" & color & \"'/>\" & \"<path d='M55 55 L5 55 A50 50 0 0 0 105 55 L95 55 A40 40 0 0 1 15,55Z'  fill='\" & color & \"'/>\"",
+              "        ) & \"<text x='35' y='60' font-size='20' >\"",
+              "        & ROUND ( [业绩达成] * 100, 0 ) & \"% </text>\" & \"</svg>\"",
+              ""
+            ],
+            "lineageTag": "9c1ffb53-39b1-40b3-ad30-f4debd93088f"
+          },
+          {
+            "name": "半环形图",
+            "expression": [
+              "",
+              "VAR w=IF([业绩达成]<=0,0,IF([业绩达成]>=1,1,[业绩达成]))",
+              "VAR ax=55-50*COS(PI()*w)",
+              "VAR ay=55-50*SIN(PI()*w)",
+              "VAR dx=55-40*COS(PI()*w)",
+              "VAR dy=55-40*SIN(PI()*w)",
+              "VAR color=IF([业绩达成]<1,\"Tomato\", \"DarkCyan\")",
+              "RETURN",
+              "\"data:image/svg+xml;utf8,\"&",
+              "\"<svg width='110' height='65' xmlns='http://www.w3.org/2000/svg'>",
+              "<path d='M55 55 L5 55 A50 50 0 0 1 \"& ax &\" \"& ay& \"L\"&dx&\" \"& dy &\"A40 40 0 0 0 15 55Z'  fill='\"&color&\"'/>\" &",
+              "\"<text x='45' y='30' font-size='10' >\" &ROUND([业绩达成]*100,0) &\"% </text>\"",
+              "&\"</svg>\""
+            ],
+            "lineageTag": "9781d3be-917e-429e-922e-6e3e3a618b19"
+          },
+          {
+            "name": "180度扇形图",
+            "expression": [
+              "",
+              "var xx=0.8",
+              "VAR w=IF(xx<=0,0,IF(xx>=1,1,xx))",
+              "VAR x=55-50*COS(PI()*w)",
+              "VAR y=55-50*SIN(PI()*w)",
+              "VAR color=IF(xx<1,\"Tomato\", \"DarkCyan\")",
+              "--知乎：wujunmin",
+              "RETURN",
+              "\"data:image/svg+xml;utf8,",
+              "<svg width='110' height='55' xmlns='http://www.w3.org/2000/svg'>",
+              "    <path d='M55 55L5 55 A50 50 0 0 1 105 55Z'  fill='lightgrey'/>",
+              " ",
+              "</svg>\""
+            ],
+            "lineageTag": "af4c772b-8272-4185-a2cd-4472e9d35b94"
+          },
+          {
+            "name": "180度扇形图 1",
+            "expression": [
+              "",
+              "var xx=0.8",
+              "VAR w=IF(xx<=0,0,IF(xx>=1,1,xx))",
+              "VAR x=55-50*COS(PI()*w)",
+              "VAR y=55-50*SIN(PI()*w)",
+              "VAR color=IF(xx<1,\"Tomato\", \"DarkCyan\")",
+              "--知乎：wujunmin",
+              "RETURN",
+              "\"data:image/svg+xml;utf8,",
+              "<svg width='110' height='55' xmlns='http://www.w3.org/2000/svg'>",
+              "    <path d='M55 55L5 55 A50 50 0 0 1 105 55Z'  fill='lightgrey'/>",
+              "    <path d='M55 55L5 55 A50 50 0 0 1 \"& x &\" \"& y& \"Z'  fill='\"&color&\"'/>\" &",
+              "\"</svg>\""
+            ],
+            "lineageTag": "6cb46618-1140-44a1-8a93-ca1b3b49dbf0"
+          },
+          {
+            "name": "全环形图 1",
+            "expression": [
+              "",
+              "VAR w =",
+              "      IF ( [业绩达成] <= 0, 0, IF ( [业绩达成] >= 1, 1, [业绩达成] ) )",
+              "var basic=55-50",
+              "VAR ax =",
+              "    55-50 * COS ( PI () * w * 2 )",
+              "VAR ay =",
+              "    55-50 * SIN ( PI () * w * 2 )",
+              "VAR dx =",
+              "    55-40 * COS ( PI () * w * 2 )",
+              "VAR dy =",
+              "    55-40 * SIN ( PI () * w * 2 )",
+              "VAR large_arc_flag =",
+              "    IF ( [业绩达成] > 0.5, 1, 0 )",
+              "VAR color =",
+              "    IF ( [业绩达成] < 1, \"Tomato\", \"DarkCyan\" )",
+              "var color2=\"#d3d3d3\"",
+              "RETURN",
+              "    \"data:image/svg+xml;utf8,\" & \"<svg width='110' height='110' xmlns='http://www.w3.org/2000/svg'>\" ",
+              "         & \"<path d='M55 55 L5 55 A50 50 0 0 1 105 55 L95 55 A40 40 0 0 0 15,55Z'  fill='\" & color2 & \"'/>\"  --上半圆",
+              "         & \"<path d='M55 55 L5 55 A50 50 0 0 0 105 55 L95 55 A40 40 0 0 1 15,55Z'  fill='\" & color2 & \"'/>\" --下半圆",
+              "         & \"<path d='M55 55 L5 55 A50 50 0 \" & large_arc_flag & \" 1 \" & ax & \" \" & ay & \"L\" & dx & \" \" & dy & \"A40 40 0 \" & large_arc_flag & \" 0 15 55Z'  fill='\" & color & \"'/>\" --指标圆",
+              "         & \"<text x='35' y='60' font-size='20' >\"",
+              "        & ROUND ( [业绩达成] * 100, 0 ) & \"% </text>\" & \"</svg>\"",
+              ""
+            ],
+            "lineageTag": "8ae91185-7a2f-4362-8499-f0a98baecc02"
+          },
+          {
+            "name": "全环形图 1 1",
+            "expression": [
+              "",
+              "VAR w =",
+              "      IF ( [业绩达成] <= 0, 0, IF ( [业绩达成] >= 1, 1, [业绩达成] ) )",
+              "var basic=55-50",
+              "VAR ax =",
+              "    55-50 * COS ( PI () * w * 2 )",
+              "VAR ay =",
+              "    55-50 * SIN ( PI () * w * 2 )",
+              "VAR dx =",
+              "    55-40 * COS ( PI () * w * 2 )",
+              "VAR dy =",
+              "    55-40 * SIN ( PI () * w * 2 )",
+              "VAR large_arc_flag =",
+              "    IF ( [业绩达成] > 0.5, 1, 0 )",
+              "VAR color =",
+              "    IF ( [业绩达成] < 1, \"Tomato\", \"DarkCyan\" )",
+              "var color2=\"#d3d3d3\"",
+              "RETURN",
+              "    \"data:image/svg+xml;utf8,\" & \"<svg width='110' height='110' xmlns='http://www.w3.org/2000/svg'>\" ",
+              "         & \"<path d='M55 55 L5 55 A50 50 0 0 1 105 55 L95 55 A40 40 0 0 0 15,55Z'  fill='\" & color2 & \"'/>\"  --上半圆",
+              "         & \"<path d='M55 55 L5 55 A50 50 0 0 0 105 55 L95 55 A40 40 0 0 1 15,55Z'  fill='red'/>\" --下半圆",
+              "         & \"<text x='35' y='60' font-size='20' >\"",
+              "        & ROUND ( [业绩达成] * 100, 0 ) & \"% </text>\" & \"</svg>\"",
+              ""
+            ],
+            "lineageTag": "2e67a42d-d4be-4f15-a046-97e686e3fbcb"
+          },
+          {
+            "name": "全环形图 1 1 1",
+            "expression": [
+              "",
+              "VAR w =",
+              "      IF ( [业绩达成] <= 0, 0, IF ( [业绩达成] >= 1, 1, [业绩达成] ) )",
+              "var basic=55-50",
+              "VAR ax =",
+              "    55-50 * COS ( PI () * w * 2 )",
+              "VAR ay =",
+              "    55-50 * SIN ( PI () * w * 2 )",
+              "VAR dx =",
+              "    55-40 * COS ( PI () * w * 2 )",
+              "VAR dy =",
+              "    55-40 * SIN ( PI () * w * 2 )",
+              "VAR large_arc_flag =",
+              "    IF ( [业绩达成] > 0.5, 1, 0 )",
+              "VAR color =",
+              "    IF ( [业绩达成] < 1, \"Tomato\", \"DarkCyan\" )",
+              "var color2=\"#d3d3d3\"",
+              "RETURN",
+              "    \"data:image/svg+xml;utf8,\" & \"<svg width='110' height='110' xmlns='http://www.w3.org/2000/svg'>\" ",
+              "         & \"<path d='M55 55 L5 55 A50 50 0 0 1 105 55 L95 55 A40 40 0 0 0 15,55Z'  fill='\" & color2 & \"'/>\"  --上半圆",
+              "         & \"<path d='M55 55 L5 55 A50 50 0 0 0 105 55 L95 55 A40 40 0 0 1 15,55Z'  fill='red'/>\" --下半圆",
+              "         & \"<text x='35' y='60' font-size='20' >\"",
+              "        & ROUND ( [业绩达成] * 100, 0 ) & \"% </text>\" & \"</svg>\"",
+              ""
+            ],
+            "lineageTag": "7b02ea7f-b7ac-4705-8494-614c56ef35b9"
+          }
+        ],
+        "annotations": [
+          {
+            "name": "PBI_ResultType",
+            "value": "Table"
+          }
+        ]
+      },
+      {
+        "name": "fact",
+        "lineageTag": "921f74f2-ed81-4cb5-82c9-9d9cce423293",
+        "columns": [
+          {
+            "name": "brand",
+            "dataType": "string",
+            "sourceColumn": "brand",
+            "lineageTag": "b18a9e45-9aaa-4f47-bcff-0e847419612f",
+            "summarizeBy": "none",
+            "annotations": [
+              {
+                "name": "SummarizationSetBy",
+                "value": "Automatic"
+              }
+            ]
+          },
+          {
+            "name": "value",
+            "dataType": "int64",
+            "sourceColumn": "value",
+            "formatString": "0",
+            "lineageTag": "9873d6d9-0740-4a82-ac7d-05bd2bccee8d",
+            "summarizeBy": "sum",
+            "annotations": [
+              {
+                "name": "SummarizationSetBy",
+                "value": "Automatic"
+              }
+            ]
+          }
+        ],
+        "partitions": [
+          {
+            "name": "fact-5d8044c2-22e5-4d8e-bc09-879c6e1960a3",
+            "mode": "import",
+            "source": {
+              "type": "m",
+              "expression": [
+                "let",
+                "    Source = Table.FromRows(Json.Document(Binary.Decompress(Binary.FromText(\"i45WSlTSUTJUitWJVkoCsozArGQgy1gpNhYA\", BinaryEncoding.Base64), Compression.Deflate)), let _t = ((type nullable text) meta [Serialized.Text = true]) in type table [brand = _t, value = _t]),",
+                "    #\"Changed Type\" = Table.TransformColumnTypes(Source,{{\"brand\", type text}, {\"value\", Int64.Type}})",
+                "in",
+                "    #\"Changed Type\""
+              ]
+            }
+          }
+        ],
+        "changedProperties": [
+          {
+            "property": "Name"
+          }
+        ],
+        "annotations": [
+          {
+            "name": "PBI_ResultType",
+            "value": "Table"
+          }
+        ]
+      }
+    ],
+    "cultures": [
+      {
+        "name": "zh-CN",
+        "linguisticMetadata": {
+          "content": {
+            "Version": "1.0.0",
+            "Language": "en-US"
+          },
+          "contentType": "json"
+        }
+      }
+    ],
+    "annotations": [
+      {
+        "name": "__PBI_TimeIntelligenceEnabled",
+        "value": "0"
+      },
+      {
+        "name": "PBI_QueryOrder",
+        "value": "[\"DAX\",\"fact\"]"
+      },
+      {
+        "name": "__TEdtr",
+        "value": "1"
+      },
+      {
+        "name": "TabularEditor_SerializeOptions",
+        "value": "{\"IgnoreInferredObjects\":true,\"IgnoreInferredProperties\":true,\"IgnoreTimestamps\":true,\"SplitMultilineStrings\":true,\"PrefixFilenames\":false,\"LocalTranslations\":false,\"LocalPerspectives\":false,\"SortArrays\":false,\"LocalRelationships\":false,\"Levels\":[\"Data Sources\",\"Perspectives\",\"Relationships\",\"Roles\",\"Shared Expressions\",\"Tables\",\"Tables/Calculation Items\",\"Tables/Columns\",\"Tables/Hierarchies\",\"Tables/Measures\",\"Tables/Partitions\",\"Translations\"]}"
+      }
+    ]
+  }
+}

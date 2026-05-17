@@ -1,0 +1,766 @@
+Power BI BIM + Live Connect Report PBIX 的 GitHub Actions CI/CD 方案规划
+=======================================================================
+
+项目位置:
+  C:\Users\L1\Desktop\pbi_cicd_test\pbi_cicd_1
+
+当前仓库:
+  git@github.com:jasonlaw997/pbi_cicd_1.git
+
+当前文件:
+  US_Sales_Analysis.bim
+  US_Sales_Analysis.pbix
+  SVG-扇形-圆环.bim
+  SVG-扇形-圆环.pbix
+
+
+一、总体建议
+------------
+
+你的目标可以拆成两个发布动作:
+
+1. 发布语义模型 / semantic model
+   源文件: .bim
+   工具: 本机 Tabular Editor 2
+   方式: GitHub Actions 触发本机 Windows self-hosted runner，再调用:
+         C:\Program Files (x86)\Tabular Editor\TabularEditor.exe
+   目标: Power BI workspace 的 XMLA endpoint
+
+2. 发布纯报表 / report-only PBIX
+   源文件: live connect 的 .pbix
+   工具: Power BI REST API
+   方式: GitHub Actions 直接调用 REST API import PBIX
+   目标: 同一个 Power BI workspace
+
+推荐第一版采用这个执行顺序:
+
+  push/main 或手动 workflow_dispatch
+      |
+      v
+  Job 1: deploy_model
+    runs-on: self-hosted Windows runner
+    动作: checkout repo -> 调 TabularEditor.exe -> deploy .bim 到 workspace
+      |
+      v
+  Job 2: publish_report
+    runs-on: ubuntu-latest 或 self-hosted Windows
+    动作: checkout repo -> 通过 REST API 上传 report-only PBIX
+      |
+      v
+  可选 Job 3: rebind_report
+    动作: 如果 report 没有绑定到目标 semantic model，则调用 Rebind Report API
+
+我的建议:
+
+  第一版可以让两个 job 都跑在 self-hosted Windows 上，最简单。
+  稳定后再把 PBIX 上传 job 移到 GitHub-hosted runner，例如 ubuntu-latest。
+
+原因:
+
+  BIM 发布必须依赖你本机的 Tabular Editor 2，所以一定需要 self-hosted runner。
+  PBIX 上传只需要 REST API 和 repo 文件，不依赖本机软件，所以可以在 GitHub-hosted runner 上运行。
+
+
+二、关键前置条件
+----------------
+
+1. GitHub 仓库建议使用 Private
+
+   因为 self-hosted runner 可以在你的本机执行命令。
+   如果仓库是 public，外部 pull request 的 workflow 存在安全风险。
+
+2. 本机必须能作为 GitHub Actions self-hosted runner
+
+   本机需要:
+
+   - 能访问 github.com
+   - 能访问 login.microsoftonline.com
+   - 能访问 api.powerbi.com
+   - 已安装 Tabular Editor 2:
+     C:\Program Files (x86)\Tabular Editor\TabularEditor.exe
+   - 机器不能关机、休眠；否则 GitHub Actions 等不到 runner。
+
+3. Power BI workspace 必须支持 XMLA read/write
+
+   发布 .bim 到 Power BI 不是走普通 PBIX import，而是走 XMLA endpoint。
+   因此目标 workspace 需要满足:
+
+   - workspace 在 Premium capacity、Premium Per User、Fabric capacity，或支持 XMLA write 的容量中。
+   - Power BI/Fabric Admin Portal 中启用 XMLA endpoint read/write。
+   - Tenant setting 中允许 XMLA endpoint / Analyze in Excel。
+   - service principal 被允许使用 Power BI APIs。
+   - service principal 或它所在的安全组已加入目标 workspace。
+
+   建议 workspace 权限:
+
+   - 第一版测试: 给 service principal workspace Admin，减少权限排查成本。
+   - 稳定后: 再收紧到 Member/Contributor，按实际操作验证。
+
+4. 需要 workspace 的 XMLA server URL
+
+   Power BI REST API 用 workspace/group id。
+   但是 XMLA/Tabular Editor 部署模型通常用 workspace name URL，而不是 group id。
+
+   格式类似:
+
+     powerbi://api.powerbi.com/v1.0/myorg/<workspace-name>
+
+   如果 workspace 名称有空格，需要 URL encode，例如:
+
+     Sales Workspace -> Sales%20Workspace
+
+   可以在 Power BI Service 的 workspace settings 或 semantic model XMLA endpoint 位置找到。
+
+5. report PBIX 必须是真正的 live connect / thin report
+
+   你的计划是:
+
+   - .bim 管模型
+   - .pbix 只管报表页面
+
+   所以 PBIX 不能包含一个完整 Import 模型。
+   如果 PBIX 里自带模型，REST API import 时可能会创建/覆盖 semantic model，这就和 Tabular Editor 管模型的设计冲突。
+
+
+三、建议的仓库结构
+------------------
+
+当前文件放在根目录也能做 CI/CD。
+但为了长期清晰，建议整理成:
+
+  pbi_cicd_1/
+    models/
+      US_Sales_Analysis.bim
+      SVG-扇形-圆环.bim
+    reports/
+      US_Sales_Analysis.pbix
+      SVG-扇形-圆环.pbix
+    scripts/
+      Deploy-BimWithTabularEditor.ps1
+      Publish-PbixReport.ps1
+      Rebind-Report.ps1
+    .github/
+      workflows/
+        powerbi-cicd.yml
+    README.md
+
+第一版不一定要立刻移动文件。
+但是后面如果模型和报表越来越多，建议加一个 mapping 文件，例如:
+
+  deploy-map.json
+
+内容示例:
+
+  [
+    {
+      "modelFile": "models/US_Sales_Analysis.bim",
+      "modelName": "US_Sales_Analysis",
+      "reportFile": "reports/US_Sales_Analysis.pbix",
+      "reportName": "US_Sales_Analysis.pbix"
+    }
+  ]
+
+
+四、GitHub Secrets 和 Variables
+-------------------------------
+
+不要把 client secret 写进仓库。
+在 GitHub repo 页面配置:
+
+  Settings
+    -> Secrets and variables
+    -> Actions
+
+建议 Secrets:
+
+  PBI_TENANT_ID
+    Azure tenant id
+
+  PBI_CLIENT_ID
+    Azure application/client id
+
+  PBI_CLIENT_SECRET
+    Azure client secret
+
+  PBI_WORKSPACE_ID
+    Power BI workspace/group id
+
+建议 Variables:
+
+  PBI_XMLA_SERVER
+    例如:
+    powerbi://api.powerbi.com/v1.0/myorg/<workspace-name>
+
+  TE2_PATH
+    C:\Program Files (x86)\Tabular Editor\TabularEditor.exe
+
+  PBI_MODEL_NAME
+    例如:
+    US_Sales_Analysis
+
+  PBI_REPORT_DISPLAY_NAME
+    例如:
+    US_Sales_Analysis.pbix
+
+说明:
+
+  Secrets 用来放敏感信息。
+  Variables 用来放非敏感配置。
+  workspace id、client id、tenant id 严格说不算密码，但统一放 Secrets 也可以。
+
+
+五、配置本机 GitHub Actions self-hosted runner
+----------------------------------------------
+
+在浏览器打开你的 GitHub 仓库:
+
+  https://github.com/jasonlaw997/pbi_cicd_1
+
+进入:
+
+  Settings
+    -> Actions
+    -> Runners
+    -> New self-hosted runner
+
+选择:
+
+  Windows
+  x64
+
+GitHub 页面会给出一组只在短时间内有效的命令。
+在本机以管理员 PowerShell 打开，建议安装到:
+
+  C:\actions-runner
+
+大致流程:
+
+  mkdir C:\actions-runner
+  cd C:\actions-runner
+  下载 GitHub 提供的 runner zip
+  解压
+  执行 GitHub 页面给出的 .\config.cmd ...
+
+建议:
+
+  1. 给 runner 加一个专用 label，例如:
+       pbi-te2
+
+  2. 安装成 Windows service。
+     这样电脑重启后 runner 能自动启动。
+
+  3. runner 只绑定这个 private repo。
+     不建议让很多公开仓库共用你的本机 runner。
+
+workflow 里可以这样指定:
+
+  runs-on: [self-hosted, Windows, X64, pbi-te2]
+
+注意:
+
+  GitHub Actions 不是从 GitHub 主动连进你的电脑。
+  是你的电脑上的 runner 主动连到 GitHub，并等待任务。
+  所以一般不需要给路由器开端口。
+
+
+六、BIM 模型发布方案
+--------------------
+
+Tabular Editor 2 CLI 发布 .bim 的核心命令形态:
+
+  TabularEditor.exe "<model.bim>" -D "<xmla-server>" "<target-model-name>" <deploy-options> -L "<user>" "<password>"
+
+service principal 登录 XMLA endpoint 的用户名格式:
+
+  app:<client-id>@<tenant-id>
+
+密码:
+
+  <client-secret>
+
+示例 PowerShell 逻辑:
+
+  $te2 = "C:\Program Files (x86)\Tabular Editor\TabularEditor.exe"
+  $modelFile = "$env:GITHUB_WORKSPACE\models\US_Sales_Analysis.bim"
+  $xmlaServer = $env:PBI_XMLA_SERVER
+  $modelName = $env:PBI_MODEL_NAME
+  $spUser = "app:$env:PBI_CLIENT_ID@$env:PBI_TENANT_ID"
+  $spSecret = $env:PBI_CLIENT_SECRET
+
+  $arguments = @(
+    "`"$modelFile`"",
+    "-D", "`"$xmlaServer`"", "`"$modelName`"",
+    "-O",
+    "-C",
+    "-SHARED",
+    "-R",
+    "-M",
+    "-E",
+    "-W",
+    "-L", "`"$spUser`"", "`"$spSecret`""
+  )
+
+  $p = Start-Process `
+    -FilePath $te2 `
+    -ArgumentList $arguments `
+    -Wait `
+    -NoNewWindow `
+    -PassThru
+
+  if ($p.ExitCode -ne 0) {
+    throw "Tabular Editor deployment failed. ExitCode=$($p.ExitCode)"
+  }
+
+为什么用 Start-Process -Wait:
+
+  TabularEditor.exe 是 Windows Forms 应用。
+  直接在命令行调用时可能提前把控制权还给 shell。
+  用 Start-Process -Wait 可以让 GitHub Actions 等它完成。
+
+部署参数建议:
+
+  -D
+    Deploy 到目标 server/database。
+
+  -O
+    允许 overwrite 已存在的模型。
+
+  -C
+    部署/覆盖 data sources/connections。
+    如果生产环境连接信息和开发环境不同，需要谨慎使用，或用脚本替换连接信息。
+
+  -SHARED
+    部署 shared expressions。
+    Tabular Editor 2.27.0 以后建议显式包含。
+
+  -R
+    部署 roles。
+
+  -M
+    部署 role members。
+    如果生产环境 RLS 成员不想被代码覆盖，就不要用 -M。
+
+  -P
+    部署 partitions。
+    第一版不建议默认加 -P。
+    原因是可能覆盖服务端已有分区、增量刷新策略或触发后续维护成本。
+
+  -F
+    full deployment，等价于一组覆盖参数。
+    第一版不建议直接用 -F，除非你明确希望全部覆盖。
+
+  -E
+    如果 Analysis Services 返回 error，让命令返回非 0 exit code，方便 CI/CD 失败。
+
+  -W
+    对未处理对象输出 warning。
+
+重要提醒:
+
+  通过 XMLA endpoint 写入 Power BI semantic model 后，可能无法再从 Power BI Service 下载回完整 PBIX。
+  因此从 CI/CD 开始后，.bim 应该成为模型的 source of truth。
+
+
+七、PBIX 纯报表发布方案
+----------------------
+
+PBIX 上传走 Power BI REST API:
+
+  POST https://api.powerbi.com/v1.0/myorg/groups/{groupId}/imports?datasetDisplayName={name}&nameConflict=CreateOrOverwrite
+
+请求需要:
+
+  Authorization: Bearer <access_token>
+  Content-Type: multipart/form-data
+  body 中包含 pbix 文件
+
+获取 access token:
+
+  POST https://login.microsoftonline.com/{tenantId}/oauth2/v2.0/token
+
+body:
+
+  grant_type=client_credentials
+  client_id=<client-id>
+  client_secret=<client-secret>
+  scope=https://analysis.windows.net/powerbi/api/.default
+
+PowerShell 7 示例逻辑:
+
+  $tokenBody = @{
+    grant_type    = "client_credentials"
+    client_id     = $env:PBI_CLIENT_ID
+    client_secret = $env:PBI_CLIENT_SECRET
+    scope         = "https://analysis.windows.net/powerbi/api/.default"
+  }
+
+  $tokenResponse = Invoke-RestMethod `
+    -Method Post `
+    -Uri "https://login.microsoftonline.com/$env:PBI_TENANT_ID/oauth2/v2.0/token" `
+    -Body $tokenBody
+
+  $headers = @{
+    Authorization = "Bearer $($tokenResponse.access_token)"
+  }
+
+  $reportNameEncoded = [System.Uri]::EscapeDataString($env:PBI_REPORT_DISPLAY_NAME)
+  $importUri = "https://api.powerbi.com/v1.0/myorg/groups/$env:PBI_WORKSPACE_ID/imports?datasetDisplayName=$reportNameEncoded&nameConflict=CreateOrOverwrite"
+
+  $form = @{
+    file = Get-Item "$env:GITHUB_WORKSPACE\reports\US_Sales_Analysis.pbix"
+  }
+
+  $import = Invoke-RestMethod `
+    -Method Post `
+    -Uri $importUri `
+    -Headers $headers `
+    -Form $form
+
+上传后建议轮询 import 状态:
+
+  GET https://api.powerbi.com/v1.0/myorg/groups/{groupId}/imports/{importId}
+
+直到:
+
+  importState = Succeeded
+
+失败时:
+
+  importState = Failed
+
+PBIX import 注意事项:
+
+  1. nameConflict 建议第一版用 CreateOrOverwrite。
+     这样同名 report 可以被覆盖。
+
+  2. 如果 PBIX 大于 1GB，需要改用 large file import 流程。
+     1GB 到 10GB 的 PBIX 需要临时上传位置，并且通常依赖 Premium capacity。
+
+  3. service principal 不支持导入带 protected sensitivity label 的文件。
+
+  4. 如果 PBIX 不是纯 live connect report，而是包含模型，上传时会影响 semantic model。
+     这和当前设计冲突，需要避免。
+
+
+八、Report 和 Semantic Model 的绑定问题
+---------------------------------------
+
+理想状态:
+
+  先部署 .bim 到目标 workspace，模型名称固定。
+  再上传 live connect report PBIX。
+  report 自动绑定到目标 workspace 中的目标 semantic model。
+
+现实中可能出现:
+
+  1. report 仍然指向开发 workspace 的 dataset。
+  2. report 指向旧 dataset id。
+  3. 第一次发布时模型名称不同，导致绑定失败。
+
+解决办法:
+
+  在 PBIX import 成功后，调用 Rebind Report API:
+
+    POST https://api.powerbi.com/v1.0/myorg/groups/{groupId}/reports/{reportId}/Rebind
+
+  body:
+
+    {
+      "datasetId": "<target-dataset-id>"
+    }
+
+target dataset id 可以通过:
+
+  GET https://api.powerbi.com/v1.0/myorg/groups/{groupId}/datasets
+
+按 dataset name 找到。
+
+注意:
+
+  Microsoft 文档说明，对 live connection report 调用 rebind 后，会失去原始 live connection，
+  并改成对目标 dataset 的直接绑定。
+
+实践上，这通常是 Power BI Service 中想要的结果:
+
+  report 明确绑定到目标 semantic model。
+
+但如果你非常依赖 PBIX 文件本身保留某种 live connection 元数据，需要单独验证下载/再发布行为。
+
+
+九、建议的 GitHub Actions workflow 草稿
+---------------------------------------
+
+文件:
+
+  .github/workflows/powerbi-cicd.yml
+
+草稿:
+
+  name: Power BI CI/CD
+
+  on:
+    workflow_dispatch:
+    push:
+      branches:
+        - main
+      paths:
+        - "*.bim"
+        - "*.pbix"
+        - "models/**"
+        - "reports/**"
+        - "scripts/**"
+        - ".github/workflows/powerbi-cicd.yml"
+
+  jobs:
+    deploy_model:
+      name: Deploy BIM model with Tabular Editor 2
+      runs-on: [self-hosted, Windows, X64, pbi-te2]
+      env:
+        PBI_TENANT_ID: ${{ secrets.PBI_TENANT_ID }}
+        PBI_CLIENT_ID: ${{ secrets.PBI_CLIENT_ID }}
+        PBI_CLIENT_SECRET: ${{ secrets.PBI_CLIENT_SECRET }}
+        PBI_XMLA_SERVER: ${{ vars.PBI_XMLA_SERVER }}
+        PBI_MODEL_NAME: ${{ vars.PBI_MODEL_NAME }}
+        TE2_PATH: ${{ vars.TE2_PATH }}
+      steps:
+        - name: Checkout
+          uses: actions/checkout@v4
+
+        - name: Deploy model
+          shell: powershell
+          run: |
+            .\scripts\Deploy-BimWithTabularEditor.ps1 `
+              -ModelFile ".\models\US_Sales_Analysis.bim" `
+              -ModelName "$env:PBI_MODEL_NAME"
+
+    publish_report:
+      name: Publish report PBIX by Power BI REST API
+      needs: deploy_model
+      runs-on: ubuntu-latest
+      env:
+        PBI_TENANT_ID: ${{ secrets.PBI_TENANT_ID }}
+        PBI_CLIENT_ID: ${{ secrets.PBI_CLIENT_ID }}
+        PBI_CLIENT_SECRET: ${{ secrets.PBI_CLIENT_SECRET }}
+        PBI_WORKSPACE_ID: ${{ secrets.PBI_WORKSPACE_ID }}
+        PBI_REPORT_DISPLAY_NAME: ${{ vars.PBI_REPORT_DISPLAY_NAME }}
+      steps:
+        - name: Checkout
+          uses: actions/checkout@v4
+
+        - name: Publish PBIX
+          shell: pwsh
+          run: |
+            ./scripts/Publish-PbixReport.ps1 `
+              -PbixFile "./reports/US_Sales_Analysis.pbix" `
+              -ReportDisplayName "$env:PBI_REPORT_DISPLAY_NAME"
+
+说明:
+
+  1. deploy_model 必须跑在 self-hosted Windows runner。
+  2. publish_report 可以跑 ubuntu-latest，因为它只调用 REST API。
+  3. 如果第一版想简单，可以把 publish_report 也改成:
+
+       runs-on: [self-hosted, Windows, X64, pbi-te2]
+       shell: pwsh 或 powershell
+
+  4. 如果本机没有 PowerShell 7，Windows self-hosted runner 上用 shell: powershell。
+     GitHub-hosted ubuntu-latest 上用 shell: pwsh。
+
+
+十、第一版最小落地步骤
+----------------------
+
+第 1 步: 确认 Power BI workspace 条件
+
+  - workspace id 已知。
+  - 查到 workspace name 和 XMLA server URL。
+  - 确认 workspace 在支持 XMLA read/write 的容量上。
+  - Power BI/Fabric Admin Portal 启用 service principal API 使用。
+  - XMLA endpoint 设置为 Read Write。
+  - service principal 加入 workspace，第一版建议 Admin。
+
+第 2 步: 在 GitHub 设置 Secrets / Variables
+
+  Secrets:
+
+    PBI_TENANT_ID
+    PBI_CLIENT_ID
+    PBI_CLIENT_SECRET
+    PBI_WORKSPACE_ID
+
+  Variables:
+
+    PBI_XMLA_SERVER
+    TE2_PATH
+    PBI_MODEL_NAME
+    PBI_REPORT_DISPLAY_NAME
+
+第 3 步: 配置 self-hosted runner
+
+  GitHub repo:
+
+    Settings -> Actions -> Runners -> New self-hosted runner
+
+  本机:
+
+    安装到 C:\actions-runner
+    配置 runner
+    加 label: pbi-te2
+    安装成 service
+
+第 4 步: 本地手工验证 Tabular Editor CLI
+
+  先在本机 PowerShell 中手工运行一次模型部署命令。
+  确认 Tabular Editor 能通过 service principal 连到 XMLA endpoint。
+
+第 5 步: 本地手工验证 PBIX import API
+
+  用 PowerShell 或 Python 先上传一个小的 report-only PBIX。
+  确认 import 成功，report 出现在目标 workspace。
+
+第 6 步: 加 scripts 和 workflow
+
+  创建:
+
+    scripts/Deploy-BimWithTabularEditor.ps1
+    scripts/Publish-PbixReport.ps1
+    .github/workflows/powerbi-cicd.yml
+
+第 7 步: 先只允许 workflow_dispatch
+
+  第一版不要一 push 就自动部署。
+  先用手动按钮运行:
+
+    Actions -> Power BI CI/CD -> Run workflow
+
+  等稳定后再打开 push main 自动部署。
+
+第 8 步: 加保护规则
+
+  如果以后有 prod workspace:
+
+    - 使用 GitHub Environments: dev / prod
+    - prod environment 设置 required reviewers
+    - main 分支保护
+    - 不允许外部 PR 直接跑部署 workflow
+
+
+十一、我建议的版本路线
+----------------------
+
+V1: 单模型 + 单报表，手动触发
+
+  - 只部署 US_Sales_Analysis.bim
+  - 只上传 US_Sales_Analysis.pbix
+  - workflow_dispatch 手动触发
+  - 所有日志能看懂，失败能定位
+
+V2: 自动 rebind
+
+  - 发布 PBIX 后自动查 report id
+  - 自动查 dataset id
+  - 必要时调用 Rebind Report API
+
+V3: 多模型/多报表 mapping
+
+  - deploy-map.json 管理模型和报表对应关系
+  - workflow 遍历 mapping 发布
+  - 支持只发布变更过的文件
+
+V4: dev/prod 环境
+
+  - dev branch -> dev workspace
+  - main/tag -> prod workspace
+  - GitHub Environments 分开 secrets/variables
+  - prod 加审批
+
+V5: 数据源和刷新自动化
+
+  - 部署后设置 datasource credentials / gateway
+  - 触发 dataset refresh
+  - 轮询 refresh 状态
+  - 失败时让 workflow fail
+
+
+十二、主要风险和建议
+--------------------
+
+1. 不要提交 secrets
+
+   client secret 只能放 GitHub Secrets、本机环境变量或安全密钥库。
+   不要放进 .ps1、.yml、.txt、README。
+
+2. self-hosted runner 有本机执行权限
+
+   只用于 private repo。
+   不要随便运行陌生 PR 的 workflow。
+
+3. BIM 发布可能改变模型下载能力
+
+   XMLA write 后，Power BI Service 中的模型可能不能再下载回 PBIX。
+   以后模型以 .bim 为 source of truth。
+
+4. 分区和增量刷新要谨慎
+
+   不要第一版就用 -P 或 -F。
+   先保留服务端 partitions，确认模型结构发布没问题后再决定。
+
+5. report-only PBIX 要确认
+
+   发布 API 对 PBIX 很直接。
+   如果 PBIX 不是 thin report，它可能带模型一起发布。
+
+6. 工作区名称变化会影响 XMLA URL
+
+   如果 workspace rename，PBI_XMLA_SERVER 要同步更新。
+
+
+十三、官方参考
+--------------
+
+GitHub self-hosted runner:
+  https://docs.github.com/en/actions/hosting-your-own-runners/adding-self-hosted-runners
+
+Tabular Editor 2 command line:
+  https://docs.tabulareditor.com/en/features/Command-line-Options.html
+
+Power BI XMLA endpoint:
+  https://learn.microsoft.com/en-us/power-bi/enterprise/service-premium-connect-tools
+
+Power BI service principal + XMLA automation:
+  https://learn.microsoft.com/en-us/power-bi/enterprise/service-premium-service-principal
+
+Power BI REST API import PBIX in group:
+  https://learn.microsoft.com/en-us/rest/api/power-bi/imports/post-import-in-group
+
+Power BI REST API rebind report in group:
+  https://learn.microsoft.com/en-us/rest/api/power-bi/reports/rebind-report-in-group
+
+
+十四、下一步建议
+----------------
+
+下一步不要直接写完整自动化。
+先补齐这 4 个信息:
+
+  1. 目标 workspace 的准确名称
+  2. PBI_XMLA_SERVER
+  3. 第一版要部署哪一组文件:
+       US_Sales_Analysis.bim + US_Sales_Analysis.pbix
+       还是
+       SVG-扇形-圆环.bim + SVG-扇形-圆环.pbix
+  4. 目标 semantic model 名称
+
+然后再创建:
+
+  scripts/Deploy-BimWithTabularEditor.ps1
+  scripts/Publish-PbixReport.ps1
+  .github/workflows/powerbi-cicd.yml
+
+第一版成功标准:
+
+  1. GitHub Actions 手动触发成功。
+  2. 日志显示 Tabular Editor deploy 成功。
+  3. Power BI workspace 中 semantic model 更新。
+  4. Power BI workspace 中 report 更新。
+  5. report 能打开，并且绑定到目标 semantic model。

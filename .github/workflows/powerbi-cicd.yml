@@ -1,0 +1,97 @@
+name: Power BI CI/CD
+
+on:
+  workflow_dispatch:
+    inputs:
+      model_file:
+        description: BIM model file to deploy
+        required: true
+        default: US_Sales_Analysis.bim
+        type: choice
+        options:
+          - US_Sales_Analysis.bim
+          - SVG-扇形-圆环.bim
+      model_name:
+        description: Target semantic model name
+        required: true
+        default: US_Sales_Analysis
+        type: string
+      pbix_file:
+        description: PBIX report file to publish
+        required: true
+        default: US_Sales_Analysis.pbix
+        type: choice
+        options:
+          - US_Sales_Analysis.pbix
+          - SVG-扇形-圆环.pbix
+      report_display_name:
+        description: Target report/import display name
+        required: true
+        default: US_Sales_Analysis.pbix
+        type: string
+      deploy_model:
+        description: Deploy BIM with Tabular Editor 2
+        required: true
+        default: true
+        type: boolean
+      publish_report:
+        description: Publish PBIX with Power BI REST API
+        required: true
+        default: true
+        type: boolean
+
+jobs:
+  deploy_model:
+    name: Deploy BIM model
+    if: ${{ inputs.deploy_model }}
+    runs-on: [self-hosted, Windows, X64]
+    env:
+      PBI_TENANT_ID: ${{ secrets.PBI_TENANT_ID }}
+      PBI_CLIENT_ID: ${{ secrets.PBI_CLIENT_ID }}
+      PBI_CLIENT_SECRET: ${{ secrets.PBI_CLIENT_SECRET }}
+      PBI_XMLA_SERVER: ${{ vars.PBI_XMLA_SERVER || 'powerbi://api.powerbi.com/v1.0/myorg/L2_1' }}
+      TE2_PATH: ${{ vars.TE2_PATH || 'C:\Program Files (x86)\Tabular Editor\TabularEditor.exe' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify Tabular Editor 2
+        shell: pwsh
+        run: |
+          if (-not (Test-Path -LiteralPath $env:TE2_PATH -PathType Leaf)) {
+            throw "Tabular Editor 2 not found at: $env:TE2_PATH"
+          }
+          Write-Host "Tabular Editor 2 path: $env:TE2_PATH"
+
+      - name: Deploy BIM
+        shell: pwsh
+        run: |
+          ./scripts/Deploy-BimWithTabularEditor.ps1 `
+            -ModelFile "${{ inputs.model_file }}" `
+            -ModelName "${{ inputs.model_name }}"
+
+  publish_report:
+    name: Publish PBIX report
+    if: ${{ always() && inputs.publish_report && (!inputs.deploy_model || needs.deploy_model.result == 'success') }}
+    needs: [deploy_model]
+    runs-on: [self-hosted, Windows, X64]
+    env:
+      PBI_TENANT_ID: ${{ secrets.PBI_TENANT_ID }}
+      PBI_CLIENT_ID: ${{ secrets.PBI_CLIENT_ID }}
+      PBI_CLIENT_SECRET: ${{ secrets.PBI_CLIENT_SECRET }}
+      PBI_WORKSPACE_ID: ${{ secrets.PBI_WORKSPACE_ID }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify Python
+        shell: pwsh
+        run: |
+          python --version
+
+      - name: Publish PBIX
+        shell: pwsh
+        run: |
+          python ./scripts/Publish-PbixReport.py `
+            --pbix-file "${{ inputs.pbix_file }}" `
+            --report-display-name "${{ inputs.report_display_name }}"

@@ -1,0 +1,19 @@
+[
+  {
+    "name": "US_Sales_Analysis",
+    "folder": "US_Sales_Analysis",
+    "modelFile": "US_Sales_Analysis/US_Sales_Analysis.bim",
+    "pbixFile": "US_Sales_Analysis/US_Sales_Analysis.pbix",
+    "modelName": "US_Sales_Analysis",
+    "reportDisplayName": "US_Sales_Analysis.pbix"
+  },
+  {
+    "name": "SVG-扇形-圆环",
+    "folder": "SVG-扇形-圆环",
+    "modelFile": "SVG-扇形-圆环/SVG-扇形-圆环.bim",
+    "pbixFile": "SVG-扇形-圆环/SVG-扇形-圆环.pbix",
+    "modelName": "SVG-扇形-圆环",
+    "reportDisplayName": "SVG-扇形-圆环.pbix"
+  }
+]
+

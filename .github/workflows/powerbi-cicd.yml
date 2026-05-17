@@ -1,34 +1,26 @@
 name: Power BI CI/CD
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
     inputs:
-      model_file:
-        description: BIM model file to deploy
+      project_name:
+        description: Project folder/name to deploy. Use all to deploy every project.
         required: true
-        default: US_Sales_Analysis.bim
+        default: all
+        type: string
+      name_conflict:
+        description: Power BI import conflict behavior
+        required: true
+        default: CreateOrOverwrite
         type: choice
         options:
-          - US_Sales_Analysis.bim
-          - SVG-扇形-圆环.bim
-      model_name:
-        description: Target semantic model name
-        required: true
-        default: US_Sales_Analysis
-        type: string
-      pbix_file:
-        description: PBIX report file to publish
-        required: true
-        default: US_Sales_Analysis.pbix
-        type: choice
-        options:
-          - US_Sales_Analysis.pbix
-          - SVG-扇形-圆环.pbix
-      report_display_name:
-        description: Target report/import display name
-        required: true
-        default: US_Sales_Analysis.pbix
-        type: string
+          - CreateOrOverwrite
+          - Overwrite
+          - Ignore
+          - Abort
       deploy_model:
         description: Deploy BIM with Tabular Editor 2
         required: true
@@ -41,57 +33,116 @@ on:
         type: boolean
 
 jobs:
-  deploy_model:
-    name: Deploy BIM model
-    if: ${{ inputs.deploy_model }}
+  detect_projects:
+    name: Detect projects to deploy
     runs-on: [self-hosted, Windows, X64]
-    env:
-      PBI_TENANT_ID: ${{ secrets.PBI_TENANT_ID }}
-      PBI_CLIENT_ID: ${{ secrets.PBI_CLIENT_ID }}
-      PBI_CLIENT_SECRET: ${{ secrets.PBI_CLIENT_SECRET }}
-      PBI_XMLA_SERVER: ${{ vars.PBI_XMLA_SERVER || 'powerbi://api.powerbi.com/v1.0/myorg/L2_1' }}
-      TE2_PATH: ${{ vars.TE2_PATH || 'C:\Program Files (x86)\Tabular Editor\TabularEditor.exe' }}
+    outputs:
+      projects: ${{ steps.detect.outputs.projects }}
+      has_projects: ${{ steps.detect.outputs.has_projects }}
+      project_count: ${{ steps.detect.outputs.project_count }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Verify Tabular Editor 2
+      - name: Detect changed projects
+        id: detect
         shell: pwsh
         run: |
-          if (-not (Test-Path -LiteralPath $env:TE2_PATH -PathType Leaf)) {
-            throw "Tabular Editor 2 not found at: $env:TE2_PATH"
+          $projectName = if ("${{ github.event_name }}" -eq "workflow_dispatch") { "${{ inputs.project_name }}" } else { "all" }
+          $projectsJson = ./scripts/Resolve-ProjectsForDeployment.ps1 `
+            -EventName "${{ github.event_name }}" `
+            -ProjectName $projectName `
+            -BeforeSha "${{ github.event.before }}" `
+            -CurrentSha "${{ github.sha }}"
+
+          $projects = @($projectsJson | ConvertFrom-Json)
+          $count = $projects.Count
+          $hasProjects = if ($count -gt 0) { "true" } else { "false" }
+
+          "projects=$projectsJson" >> $env:GITHUB_OUTPUT
+          "project_count=$count" >> $env:GITHUB_OUTPUT
+          "has_projects=$hasProjects" >> $env:GITHUB_OUTPUT
+
+          if ($count -eq 0) {
+            Write-Host "No project folders changed. Nothing to deploy."
           }
-          Write-Host "Tabular Editor 2 path: $env:TE2_PATH"
+          else {
+            Write-Host "Projects to deploy:"
+            $projects | ForEach-Object { Write-Host " - $($_.name)" }
+          }
 
-      - name: Deploy BIM
-        shell: pwsh
-        run: |
-          ./scripts/Deploy-BimWithTabularEditor.ps1 `
-            -ModelFile "${{ inputs.model_file }}" `
-            -ModelName "${{ inputs.model_name }}"
-
-  publish_report:
-    name: Publish PBIX report
-    if: ${{ always() && inputs.publish_report && (!inputs.deploy_model || needs.deploy_model.result == 'success') }}
-    needs: [deploy_model]
+  deploy_project:
+    name: Deploy ${{ matrix.project.name }}
+    needs: detect_projects
+    if: ${{ needs.detect_projects.outputs.has_projects == 'true' }}
     runs-on: [self-hosted, Windows, X64]
+    strategy:
+      fail-fast: false
+      matrix:
+        project: ${{ fromJSON(needs.detect_projects.outputs.projects) }}
     env:
       PBI_TENANT_ID: ${{ secrets.PBI_TENANT_ID }}
       PBI_CLIENT_ID: ${{ secrets.PBI_CLIENT_ID }}
       PBI_CLIENT_SECRET: ${{ secrets.PBI_CLIENT_SECRET }}
       PBI_WORKSPACE_ID: ${{ secrets.PBI_WORKSPACE_ID }}
+      PBI_XMLA_SERVER: ${{ vars.PBI_XMLA_SERVER }}
+      TE2_PATH: ${{ vars.TE2_PATH }}
+      NAME_CONFLICT: ${{ github.event_name == 'workflow_dispatch' && inputs.name_conflict || 'CreateOrOverwrite' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Verify configuration
+        shell: pwsh
+        run: |
+          $required = @(
+            "PBI_TENANT_ID",
+            "PBI_CLIENT_ID",
+            "PBI_CLIENT_SECRET",
+            "PBI_WORKSPACE_ID",
+            "PBI_XMLA_SERVER",
+            "TE2_PATH"
+          )
+
+          foreach ($name in $required) {
+            if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
+              throw "Missing required GitHub secret/variable: $name"
+            }
+          }
+
+          if ($env:PBI_XMLA_SERVER -like "*L2_1*") {
+            throw "PBI_XMLA_SERVER still points to L2_1. Update the GitHub variable before deploying."
+          }
+
+          if (-not (Test-Path -LiteralPath $env:TE2_PATH -PathType Leaf)) {
+            throw "Tabular Editor 2 not found at: $env:TE2_PATH"
+          }
+
+          Write-Host "Target XMLA server: $env:PBI_XMLA_SERVER"
+          Write-Host "Tabular Editor 2 path: $env:TE2_PATH"
+          Write-Host "Project: ${{ matrix.project.name }}"
+
+      - name: Deploy BIM
+        if: ${{ github.event_name == 'push' || inputs.deploy_model }}
+        shell: pwsh
+        run: |
+          ./scripts/Deploy-BimWithTabularEditor.ps1 `
+            -ModelFile "${{ matrix.project.modelFile }}" `
+            -ModelName "${{ matrix.project.modelName }}"
+
       - name: Verify Python
+        if: ${{ github.event_name == 'push' || inputs.publish_report }}
         shell: pwsh
         run: |
           python --version
 
       - name: Publish PBIX
+        if: ${{ github.event_name == 'push' || inputs.publish_report }}
         shell: pwsh
         run: |
           python ./scripts/Publish-PbixReport.py `
-            --pbix-file "${{ inputs.pbix_file }}" `
-            --report-display-name "${{ inputs.report_display_name }}"
+            --pbix-file "${{ matrix.project.pbixFile }}" `
+            --report-display-name "${{ matrix.project.reportDisplayName }}" `
+            --name-conflict "$env:NAME_CONFLICT"

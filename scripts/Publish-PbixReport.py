@@ -10,6 +10,7 @@ import os
 import sys
 import time
 import uuid
+import http.client
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -45,14 +46,22 @@ def request_json(
     expected_statuses: tuple[int, ...] = (200,),
 ) -> dict[str, Any]:
     request = urllib.request.Request(url, data=data, headers=headers or {}, method=method)
-    try:
-        with urllib.request.urlopen(request, timeout=300) as response:
-            body = response.read().decode("utf-8")
-            if response.status not in expected_statuses:
-                raise ApiError(method, url, response.status, body)
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
-        raise ApiError(method, url, exc.code, body) from exc
+    for attempt in range(1, 4):
+        try:
+            with urllib.request.urlopen(request, timeout=300) as response:
+                body = response.read().decode("utf-8")
+                if response.status not in expected_statuses:
+                    raise ApiError(method, url, response.status, body)
+                break
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            raise ApiError(method, url, exc.code, body) from exc
+        except (urllib.error.URLError, http.client.RemoteDisconnected) as exc:
+            if attempt == 3:
+                raise
+            wait_seconds = 2 * attempt
+            print(f"{method} {url} connection failed on attempt {attempt}; retrying in {wait_seconds}s...")
+            time.sleep(wait_seconds)
 
     if not body.strip():
         return {}
@@ -242,4 +251,3 @@ if __name__ == "__main__":
         except json.JSONDecodeError:
             print(exc.body, file=sys.stderr)
         raise SystemExit(1) from exc
-

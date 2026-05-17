@@ -56,7 +56,11 @@ def request_json(
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
             raise ApiError(method, url, exc.code, body) from exc
-        except (urllib.error.URLError, http.client.RemoteDisconnected) as exc:
+        except (
+            urllib.error.URLError,
+            http.client.IncompleteRead,
+            http.client.RemoteDisconnected,
+        ) as exc:
             if attempt == 3:
                 raise
             wait_seconds = 2 * attempt
@@ -137,6 +141,23 @@ def publish_pbix(
     )
 
 
+def report_name_candidates(display_name: str) -> set[str]:
+    candidates = {display_name}
+    if display_name.lower().endswith(".pbix"):
+        candidates.add(display_name[:-5])
+    return candidates
+
+
+def matching_reports(reports: list[dict[str, Any]], display_name: str) -> list[dict[str, Any]]:
+    candidates = report_name_candidates(display_name)
+    return [report for report in reports if report.get("name") in candidates]
+
+
+def make_temp_display_name(report_display_name: str) -> str:
+    stem = report_display_name[:-5] if report_display_name.lower().endswith(".pbix") else report_display_name
+    return f"__cicd_tmp__{stem}_{uuid.uuid4().hex[:8]}.pbix"
+
+
 def get_import(access_token: str, workspace_id: str, import_id: str) -> dict[str, Any]:
     return request_json(
         "GET",
@@ -195,6 +216,21 @@ def get_import_report_id(final_import: dict[str, Any]) -> str | None:
     return None
 
 
+def choose_report_to_keep(
+    reports: list[dict[str, Any]],
+    dataset_id: str | None,
+) -> dict[str, Any]:
+    if not reports:
+        raise ValueError("reports must not be empty")
+
+    if dataset_id:
+        for report in reports:
+            if report.get("datasetId") == dataset_id:
+                return report
+
+    return reports[0]
+
+
 def rebind_report(
     *,
     access_token: str,
@@ -213,6 +249,82 @@ def rebind_report(
         data=json.dumps({"datasetId": dataset_id}).encode("utf-8"),
         expected_statuses=(200, 202),
     )
+
+
+def update_report_content(
+    *,
+    access_token: str,
+    workspace_id: str,
+    target_report_id: str,
+    source_report_id: str,
+) -> dict[str, Any]:
+    return request_json(
+        "POST",
+        f"{POWER_BI_API_ROOT}/groups/{workspace_id}/reports/{target_report_id}/UpdateReportContent",
+        headers={
+            "Accept": "application/json",
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+        },
+        data=json.dumps(
+            {
+                "sourceReport": {
+                    "sourceReportId": source_report_id,
+                    "sourceWorkspaceId": workspace_id,
+                },
+                "sourceType": "ExistingReport",
+            }
+        ).encode("utf-8"),
+    )
+
+
+def delete_report(
+    *,
+    access_token: str,
+    workspace_id: str,
+    report_id: str,
+) -> None:
+    request_json(
+        "DELETE",
+        f"{POWER_BI_API_ROOT}/groups/{workspace_id}/reports/{report_id}",
+        headers={
+            "Accept": "application/json",
+            "Authorization": f"Bearer {access_token}",
+        },
+        expected_statuses=(200, 202, 204),
+    )
+
+
+def cleanup_duplicate_reports(
+    *,
+    access_token: str,
+    workspace_id: str,
+    report_display_name: str,
+    keep_report_id: str,
+) -> None:
+    reports = list_items(access_token, workspace_id, "reports")
+    duplicates = [
+        report
+        for report in matching_reports(reports, report_display_name)
+        if report.get("id") != keep_report_id
+    ]
+
+    if not duplicates:
+        print("No duplicate reports found.")
+        return
+
+    print(f"Deleting {len(duplicates)} duplicate report(s)...")
+    for report in duplicates:
+        report_id = report.get("id")
+        if not isinstance(report_id, str) or not report_id:
+            print(f"Skipping duplicate report without id: {report}")
+            continue
+        print(f"Deleting duplicate report: {report.get('name')} ({report_id})")
+        delete_report(
+            access_token=access_token,
+            workspace_id=workspace_id,
+            report_id=report_id,
+        )
 
 
 def wait_for_import(
@@ -286,12 +398,49 @@ def main() -> int:
     print(f"Name conflict mode: {args.name_conflict}")
 
     access_token = get_access_token(tenant_id, client_id, client_secret)
+
+    dataset_id: str | None = None
+    if args.semantic_model_name:
+        print(f"Looking up semantic model: {args.semantic_model_name}")
+        datasets = list_items(access_token, workspace_id, "datasets")
+        dataset = find_item_by_name(
+            datasets,
+            args.semantic_model_name,
+            item_type="semantic model/dataset",
+        )
+        candidate_dataset_id = dataset.get("id")
+        if not isinstance(candidate_dataset_id, str) or not candidate_dataset_id:
+            raise SystemExit(f"Dataset did not include an id: {dataset}")
+        dataset_id = candidate_dataset_id
+
+    existing_reports = matching_reports(
+        list_items(access_token, workspace_id, "reports"),
+        args.report_display_name,
+    )
+    if existing_reports:
+        keep_report = choose_report_to_keep(existing_reports, dataset_id)
+        keep_report_id = keep_report.get("id")
+        if not isinstance(keep_report_id, str) or not keep_report_id:
+            raise SystemExit(f"Existing report did not include an id: {keep_report}")
+
+        import_display_name = make_temp_display_name(args.report_display_name)
+        import_name_conflict = "Abort"
+        print(
+            "Existing report found. Importing PBIX as temporary source report "
+            f"'{import_display_name}', then updating existing report {keep_report_id}."
+        )
+    else:
+        keep_report_id = None
+        import_display_name = args.report_display_name
+        import_name_conflict = args.name_conflict
+        print("No existing report found. Importing PBIX as the target report.")
+
     import_result = publish_pbix(
         access_token=access_token,
         workspace_id=workspace_id,
         pbix_file=pbix_file,
-        report_display_name=args.report_display_name,
-        name_conflict=args.name_conflict,
+        report_display_name=import_display_name,
+        name_conflict=import_name_conflict,
     )
 
     import_id = import_result.get("id")
@@ -310,31 +459,43 @@ def main() -> int:
     print("PBIX import succeeded.")
     print(json.dumps(final_import, indent=2, ensure_ascii=False))
 
-    if args.semantic_model_name:
-        print(f"Looking up semantic model: {args.semantic_model_name}")
-        datasets = list_items(access_token, workspace_id, "datasets")
-        dataset = find_item_by_name(
-            datasets,
-            args.semantic_model_name,
-            item_type="semantic model/dataset",
+    imported_report_id = get_import_report_id(final_import)
+    if not imported_report_id:
+        reports = list_items(access_token, workspace_id, "reports")
+        imported_report = find_item_by_name(
+            reports,
+            import_display_name,
+            item_type="imported report",
         )
-        dataset_id = dataset.get("id")
-        if not isinstance(dataset_id, str) or not dataset_id:
-            raise SystemExit(f"Dataset did not include an id: {dataset}")
+        imported_report_id = imported_report.get("id")
 
-        report_id = get_import_report_id(final_import)
-        if not report_id:
-            reports = list_items(access_token, workspace_id, "reports")
-            report = find_item_by_name(
-                reports,
-                args.report_display_name,
-                item_type="report",
+    if not isinstance(imported_report_id, str) or not imported_report_id:
+        raise SystemExit("Could not determine imported report id.")
+
+    if keep_report_id:
+        try:
+            print(
+                f"Updating existing report {keep_report_id} with source report "
+                f"{imported_report_id}..."
             )
-            report_id = report.get("id")
+            update_report_content(
+                access_token=access_token,
+                workspace_id=workspace_id,
+                target_report_id=keep_report_id,
+                source_report_id=imported_report_id,
+            )
+            report_id = keep_report_id
+        finally:
+            print(f"Deleting temporary source report {imported_report_id}...")
+            delete_report(
+                access_token=access_token,
+                workspace_id=workspace_id,
+                report_id=imported_report_id,
+            )
+    else:
+        report_id = imported_report_id
 
-        if not isinstance(report_id, str) or not report_id:
-            raise SystemExit("Could not determine report id for rebind.")
-
+    if dataset_id:
         print(f"Rebinding report {report_id} to semantic model {dataset_id}...")
         rebind_report(
             access_token=access_token,
@@ -344,6 +505,35 @@ def main() -> int:
         )
         print("Report rebind completed.")
 
+    cleanup_duplicate_reports(
+        access_token=access_token,
+        workspace_id=workspace_id,
+        report_display_name=args.report_display_name,
+        keep_report_id=report_id,
+    )
+
+    temp_reports = matching_reports(
+        list_items(access_token, workspace_id, "reports"),
+        import_display_name,
+    )
+    for report in temp_reports:
+        temp_report_id = report.get("id")
+        if (
+            isinstance(temp_report_id, str)
+            and temp_report_id
+            and temp_report_id != report_id
+        ):
+            print(
+                f"Deleting leftover temporary report: "
+                f"{report.get('name')} ({temp_report_id})"
+            )
+            delete_report(
+                access_token=access_token,
+                workspace_id=workspace_id,
+                report_id=temp_report_id,
+            )
+
+    print(f"Published report ID: {report_id}")
     return 0
 
 

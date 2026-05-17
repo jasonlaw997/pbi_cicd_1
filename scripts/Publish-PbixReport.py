@@ -148,6 +148,73 @@ def get_import(access_token: str, workspace_id: str, import_id: str) -> dict[str
     )
 
 
+def list_items(access_token: str, workspace_id: str, item_type: str) -> list[dict[str, Any]]:
+    payload = request_json(
+        "GET",
+        f"{POWER_BI_API_ROOT}/groups/{workspace_id}/{item_type}",
+        headers={
+            "Accept": "application/json",
+            "Authorization": f"Bearer {access_token}",
+        },
+    )
+    value = payload.get("value", [])
+    if not isinstance(value, list):
+        raise SystemExit(f"Unexpected {item_type} response: {payload}")
+    return [item for item in value if isinstance(item, dict)]
+
+
+def find_item_by_name(
+    items: list[dict[str, Any]],
+    name: str,
+    *,
+    item_type: str,
+) -> dict[str, Any]:
+    matches = [item for item in items if item.get("name") == name]
+    if not matches and name.lower().endswith(".pbix"):
+        stem = name[:-5]
+        matches = [item for item in items if item.get("name") == stem]
+
+    if not matches:
+        available = ", ".join(str(item.get("name", "<unnamed>")) for item in items)
+        raise SystemExit(f"Could not find {item_type} named '{name}'. Available: {available}")
+    if len(matches) > 1:
+        ids = ", ".join(str(item.get("id", "<no id>")) for item in matches)
+        raise SystemExit(f"Found multiple {item_type} items named '{name}': {ids}")
+
+    return matches[0]
+
+
+def get_import_report_id(final_import: dict[str, Any]) -> str | None:
+    reports = final_import.get("reports")
+    if isinstance(reports, list) and reports:
+        first_report = reports[0]
+        if isinstance(first_report, dict):
+            report_id = first_report.get("id")
+            if isinstance(report_id, str) and report_id:
+                return report_id
+    return None
+
+
+def rebind_report(
+    *,
+    access_token: str,
+    workspace_id: str,
+    report_id: str,
+    dataset_id: str,
+) -> None:
+    request_json(
+        "POST",
+        f"{POWER_BI_API_ROOT}/groups/{workspace_id}/reports/{report_id}/Rebind",
+        headers={
+            "Accept": "application/json",
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+        },
+        data=json.dumps({"datasetId": dataset_id}).encode("utf-8"),
+        expected_statuses=(200, 202),
+    )
+
+
 def wait_for_import(
     *,
     access_token: str,
@@ -182,6 +249,10 @@ def parse_args() -> argparse.Namespace:
         "--report-display-name",
         required=True,
         help="Display name used by the Power BI import API.",
+    )
+    parser.add_argument(
+        "--semantic-model-name",
+        help="If set, rebind the imported report to this semantic model/dataset name.",
     )
     parser.add_argument(
         "--name-conflict",
@@ -238,6 +309,41 @@ def main() -> int:
 
     print("PBIX import succeeded.")
     print(json.dumps(final_import, indent=2, ensure_ascii=False))
+
+    if args.semantic_model_name:
+        print(f"Looking up semantic model: {args.semantic_model_name}")
+        datasets = list_items(access_token, workspace_id, "datasets")
+        dataset = find_item_by_name(
+            datasets,
+            args.semantic_model_name,
+            item_type="semantic model/dataset",
+        )
+        dataset_id = dataset.get("id")
+        if not isinstance(dataset_id, str) or not dataset_id:
+            raise SystemExit(f"Dataset did not include an id: {dataset}")
+
+        report_id = get_import_report_id(final_import)
+        if not report_id:
+            reports = list_items(access_token, workspace_id, "reports")
+            report = find_item_by_name(
+                reports,
+                args.report_display_name,
+                item_type="report",
+            )
+            report_id = report.get("id")
+
+        if not isinstance(report_id, str) or not report_id:
+            raise SystemExit("Could not determine report id for rebind.")
+
+        print(f"Rebinding report {report_id} to semantic model {dataset_id}...")
+        rebind_report(
+            access_token=access_token,
+            workspace_id=workspace_id,
+            report_id=report_id,
+            dataset_id=dataset_id,
+        )
+        print("Report rebind completed.")
+
     return 0
 
 

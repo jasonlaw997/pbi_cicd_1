@@ -48,29 +48,54 @@ else {
     }
 
     if (-not [string]::IsNullOrWhiteSpace($BeforeSha) -and $BeforeSha -notmatch "^0+$") {
-        $changedFiles = @(git diff --name-only $BeforeSha $CurrentSha)
+        $changedFiles = @(git -c core.quotePath=false diff --name-only $BeforeSha $CurrentSha)
     }
     else {
-        $changedFiles = @(git diff-tree --no-commit-id --name-only -r $CurrentSha)
+        $changedFiles = @(git -c core.quotePath=false diff-tree --no-commit-id --name-only -r $CurrentSha)
     }
 
     $changedFolders = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $deployAll = $false
     foreach ($file in $changedFiles) {
         $normalized = $file -replace "\\", "/"
         $folder = ($normalized -split "/")[0]
         if (-not [string]::IsNullOrWhiteSpace($folder)) {
             [void]$changedFolders.Add($folder)
         }
+
+        if (
+            $normalized -eq "projects.json" -or
+            $normalized.StartsWith(".github/", [System.StringComparison]::OrdinalIgnoreCase) -or
+            $normalized.StartsWith("scripts/", [System.StringComparison]::OrdinalIgnoreCase)
+        ) {
+            $deployAll = $true
+        }
     }
 
-    $selectedProjects = @(
-        $projects | Where-Object {
-            $changedFolders.Contains([string]$_.folder)
-        }
-    )
+    if ($deployAll) {
+        $selectedProjects = $projects
+    }
+    else {
+        $selectedProjects = @(
+            $projects | Where-Object {
+                $changedFolders.Contains([string]$_.folder)
+            }
+        )
+    }
+
+    Write-Host "Changed files:"
+    $changedFiles | ForEach-Object { Write-Host " - $_" }
+
+    if ($deployAll) {
+        Write-Host "Deployment config changed; all projects will be deployed."
+    }
+    else {
+        Write-Host "Changed top-level folders:"
+        $changedFolders | ForEach-Object { Write-Host " - $_" }
+    }
 }
 
-$deploymentProjects = @(
+$projectList = @(
     $selectedProjects | ForEach-Object {
         [pscustomobject]@{
             name = $_.name
@@ -83,5 +108,9 @@ $deploymentProjects = @(
     }
 )
 
-ConvertTo-Json -InputObject $deploymentProjects -Compress -Depth 5
+if ($projectList.Count -eq 0) {
+    Write-Output "[]"
+    exit 0
+}
 
+ConvertTo-Json -InputObject $projectList -Compress -Depth 5

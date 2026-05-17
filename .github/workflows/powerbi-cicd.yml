@@ -55,7 +55,7 @@ jobs:
             -EventName "${{ github.event_name }}" `
             -ProjectName $projectName `
             -BeforeSha "${{ github.event.before }}" `
-            -CurrentSha "${{ github.sha }}"
+            -CurrentSha "${{ github.sha }}" | Select-Object -Last 1
 
           $projects = @($projectsJson | ConvertFrom-Json)
           $count = $projects.Count
@@ -145,4 +145,5 @@ jobs:
           python ./scripts/Publish-PbixReport.py `
             --pbix-file "${{ matrix.project.pbixFile }}" `
             --report-display-name "${{ matrix.project.reportDisplayName }}" `
-            --name-conflict "$env:NAME_CONFLICT"
+            --name-conflict "$env:NAME_CONFLICT" `
+            --semantic-model-name "${{ matrix.project.modelName }}"
